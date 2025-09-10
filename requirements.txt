@@ -1,0 +1,60 @@
+# Core
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+
+# Config & validation 
+pydantic==2.5.0
+pydantic-settings==2.1.0
+python-dotenv==1.0.0
+python-multipart==0.0.6
+
+#Dev/Test
+pytest==7.4.3
+pytest-asyncio==0.21.1
+httpx==0.25.2
+black==23.11.0
+flake8==6.1.0
+isort==5.12.0
+
+#  OpenAI & tokenization 
+openai>=1.40.0,<2.0.0
+tiktoken==0.7.0
+
+# LangChain 
+langchain==0.2.14
+langchain-openai==0.1.21
+langchain-community==0.2.12
+langchain-pinecone==0.1.1
+langchain-text-splitters==0.2.2
+langchain-core>=0.2.32
+
+
+# Pineco 
+pinecone-client==3.2.2   
+
+# Local fallback 
+chromadb==0.4.24
+
+# Ingestion 
+pypdf==4.2.0
+beautifulsoup4==4.12.3
+
+
+# streaming
+sse-starlette==1.8.2
+
+# Google (optional, if you want native Gmail/Calendar APIs)
+google-api-python-client==2.137.0
+google-auth==2.33.0
+google-auth-oauthlib==1.2.0
+google-auth-httplib2
+pdfplumber 
+camelot-py[cv] 
+pytesseract 
+pillow 
+pymupdf
+
+sqlmodel 
+sqlalchemy
+duckduckgo-search==6.3.5
+doctr[torch]
