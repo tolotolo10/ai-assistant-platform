@@ -17,8 +17,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy app code
 COPY . .
 
-# Expose FastAPI port
-EXPOSE 8000
+# Expose port (Render defaults to 10000, but we’ll respect $PORT)
+EXPOSE 10000
 
-# Start FastAPI with uvicorn (using port 8000 by default)
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Start FastAPI with uvicorn, binding to the port Render provides
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
