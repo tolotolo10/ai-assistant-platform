@@ -55,11 +55,12 @@ def google_auth_callback(code: str, state: str, request: Request):
         return HTMLResponse(html)
 
     except Exception as e:
+        error_str = str(e).replace('"', '\\"')
         html = f"""
         <script>
-          try {{ window.opener && window.opener.postMessage({{type:"google-auth-failed", error: "{str(e).replace('"','\\"')}"}},"*"); }} catch(err) {{}}
+        try {{ window.opener && window.opener.postMessage({{type:"google-auth-failed", error: "{error_str}"}},"*"); }} catch(err) {{}}
         </script>
-        <pre>OAuth callback failed:\\n{str(e)}</pre>
+        <pre>OAuth callback failed:\n{str(e)}</pre>
         """
         return HTMLResponse(html, status_code=500)
 
