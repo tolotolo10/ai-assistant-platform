@@ -8,6 +8,7 @@ from app.services.google_auth import start_oauth, exchange_code_for_tokens
 from app.services.token_store import TokenStore
 from app.services.session import get_current_user_id
 
+
 router = APIRouter(prefix="/auth/google", tags=["google-auth"])
 
 @router.get("/start")
@@ -56,3 +57,28 @@ def google_auth_callback(code: str, state: str, request: Request):
         <pre>OAuth callback failed:\n{str(e)}</pre>
         """
         return HTMLResponse(html, status_code=500)
+
+
+@router.post("/disconnect")
+def google_disconnect(request: Request):
+    user_id = get_current_user_id(request)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Not signed in")
+
+    # Best-effort revoke
+    try:
+        import requests
+        tok = TokenStore.get(user_id) or {}
+        t = tok.get("token") or tok.get("refresh_token")
+        if t:
+            requests.post(
+                "https://oauth2.googleapis.com/revoke",
+                params={"token": t},
+                headers={"content-type": "application/x-www-form-urlencoded"},
+                timeout=5,
+            )
+    except Exception:
+        pass
+
+    TokenStore.delete(user_id)
+    return JSONResponse({"ok": True})

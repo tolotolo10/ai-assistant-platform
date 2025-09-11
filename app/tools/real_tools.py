@@ -438,6 +438,169 @@ def final_answer_tool(answer: str, tools_used: list[str]) -> str:
     # Return JSON so downstream code can parse it easily.
     return json.dumps({"answer": answer, "tools_used": tools_used}, ensure_ascii=False)
 
+# =========================
+# List calendar events tool
+# =========================
+from pydantic import BaseModel, Field, validator
+from typing import Literal, Optional
+from zoneinfo import ZoneInfo
+
+class EventQueryInput(BaseModel):
+    user_id: Optional[str] = Field(
+        None, description="Current app user id. DEV: if omitted, uses the only connected account."
+    )
+    timeframe: Optional[Literal["this_week", "this_month", "next_7_days", "next_30_days"]] = None
+    start_iso: Optional[str] = None
+    end_iso: Optional[str] = None
+    timezone: str = Field("UTC", description="IANA timezone, e.g. 'Europe/Paris'")
+    include_canceled: bool = False
+    max_results: int = Field(100, ge=1, le=2500)
+
+    @validator("timezone")
+    def validate_tz(cls, v):
+        try:
+            ZoneInfo(v)
+            return v
+        except Exception:
+            raise ValueError(f"Invalid timezone: {v}")
+
+    @validator("end_iso")
+    def end_after_start(cls, v, values):
+        s = values.get("start_iso")
+        if v and s:
+            try:
+                sdt = dt.datetime.fromisoformat(s)
+                edt = dt.datetime.fromisoformat(v)
+                if edt <= sdt:
+                    raise ValueError("end_iso must be after start_iso")
+            except Exception:
+                # If parsing fails, let Google API error later; we keep this gentle.
+                return v
+        return v
+
+
+def _month_bounds(now: dt.datetime) -> tuple[dt.datetime, dt.datetime]:
+    start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    if start.month == 12:
+        end = start.replace(year=start.year + 1, month=1)
+    else:
+        end = start.replace(month=start.month + 1)
+    return start, end
+
+def _week_bounds(now: dt.datetime) -> tuple[dt.datetime, dt.datetime]:
+    # ISO week: Monday 00:00 through next Monday 00:00 (Europe typically expects Monday start)
+    monday = (now - dt.timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
+    return monday, monday + dt.timedelta(days=7)
+
+def _window_from_timeframe(tf: str, tz: ZoneInfo) -> tuple[str, str]:
+    now = dt.datetime.now(tz)
+    if tf == "this_month":
+        s, e = _month_bounds(now)
+    elif tf == "next_7_days":
+        s = now.replace(microsecond=0)
+        e = s + dt.timedelta(days=7)
+    elif tf == "next_30_days":
+        s = now.replace(microsecond=0)
+        e = s + dt.timedelta(days=30)
+    else:  # default "this_week"
+        s, e = _week_bounds(now)
+    return s.isoformat(), e.isoformat()
+
+
+@tool("list_calendar_events", args_schema=EventQueryInput)
+def list_calendar_events_tool(
+    user_id: str | None = None,   # ← make optional
+    timeframe: str | None = None,
+    start_iso: str | None = None,
+    end_iso: str | None = None,
+    timezone: str = "UTC",
+    include_canceled: bool = False,
+    max_results: int = 100,
+) -> str:
+    """
+    List Google Calendar events for a user between a time window.
+    Returns JSON:
+      - {"error": "AUTH_REQUIRED"} if the user hasn't connected Google yet.
+      - {"ok": True, "timeframe": <...>, "timezone": <...>, "start": <iso>, "end": <iso>,
+         "count": <int>, "events": [<google event subset>]}
+    Notes:
+      - Uses 'primary' calendar.
+      - timeMax is exclusive, as per Google Calendar API semantics.
+      - Includes all-day events (which use 'date' rather than 'dateTime').
+    """
+    try:
+        from googleapiclient.discovery import build
+        from app.tools.google_creds import get_user_google_creds
+
+        tz = ZoneInfo(timezone)
+
+        # Resolve auth
+        creds, err = get_user_google_creds(user_id)
+        if err == "AUTH_REQUIRED":
+            return json.dumps({"error": "AUTH_REQUIRED"}, ensure_ascii=False)
+        if err:
+            return json.dumps({"error": f"Calendar not configured: {err}"}, ensure_ascii=False)
+
+        # Resolve window
+        if not (start_iso and end_iso):
+            tf = timeframe or "this_week"
+            start_iso, end_iso = _window_from_timeframe(tf, tz)
+        else:
+            tf = "custom"
+
+        service = build("calendar", "v3", credentials=creds)
+
+        # Fetch list
+        resp = service.events().list(
+            calendarId="primary",
+            timeMin=start_iso,
+            timeMax=end_iso,
+            singleEvents=True,      # expand recurring to instances
+            orderBy="startTime",
+            maxResults=max_results,
+            showDeleted=include_canceled,
+        ).execute()
+
+        items = resp.get("items", []) or []
+
+        # Filter cancelled unless caller asked otherwise
+        if not include_canceled:
+            items = [ev for ev in items if ev.get("status") != "cancelled"]
+
+        # Trim to a tidy subset per event
+        out = []
+        for ev in items:
+            out.append({
+                "id": ev.get("id"),
+                "htmlLink": ev.get("htmlLink"),
+                "status": ev.get("status"),
+                "summary": ev.get("summary"),
+                "description": ev.get("description"),
+                "start": ev.get("start"),  # may contain 'date' or 'dateTime'
+                "end": ev.get("end"),
+                "location": ev.get("location"),
+                "attendees": ev.get("attendees", []),
+                "organizer": ev.get("organizer", {}),
+                "hangoutLink": ev.get("hangoutLink") or ev.get("conferenceData", {}).get("entryPoints", [{}])[0].get("uri"),
+            })
+
+        payload = {
+            "ok": True,
+            "timeframe": tf,
+            "timezone": timezone,
+            "start": start_iso,
+            "end": end_iso,
+            "count": len(out),
+            "events": out,
+        }
+        return json.dumps(payload, ensure_ascii=False)
+
+    except ModuleNotFoundError as e:
+        return json.dumps({
+            "error": f"Missing package: {e}. Install: pip install google-api-python-client google-auth-httplib2 google-auth-oauthlib"
+        }, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"error": f"Failed to list calendar events: {e}"}, ensure_ascii=False)
 
 # =========================
 # Tool registry
@@ -453,6 +616,7 @@ def get_all_tools():
         get_weather_serp_tool,   # weather via SerpAPI
         google_search_tool,      # Google search via SerpAPI
         send_email_smtp_tool,
+        list_calendar_events_tool,
         create_calendar_event_tool,
         rag_query_tool,
         final_answer_tool,

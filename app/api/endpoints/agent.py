@@ -2,6 +2,7 @@
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+from app.tools.real_tools import get_all_tools
 
 from app.services.agent_service import AgentService
 
@@ -39,3 +40,14 @@ def stream(
             yield frame
 
     return StreamingResponse(gen(), media_type="text/event-stream")
+
+from app.tools.real_tools import get_all_tools
+
+@router.post("/sessions/reset")
+def reset_sessions():
+    agent_service.drop_all_sessions()
+    return {"ok": True}
+
+@router.get("/debug/tools")
+def debug_tools():
+    return {"tools": [t.name for t in get_all_tools()]}

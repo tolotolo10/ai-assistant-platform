@@ -733,8 +733,138 @@
             <button id="quickSchedule" class="action-btn primary">
               📅 Schedule Meeting
             </button>
+
+            <!-- NEW: Connect Google Calendar -->
+            <button id="connect-google-btn" class="action-btn" type="button">
+              🔗 Connect Google Calendar
+            </button>
+            <div id="google-conn-status" aria-live="polite" style="font-size:12px; opacity:.8;">
+              Not connected
+            </div>
           </div>
         </div>
+
+        
+
+        <script>
+          (() => {
+            const btn = document.getElementById("connect-google-btn");
+            const statusEl = document.getElementById("google-conn-status");
+          
+            window.GoogleCalendarConnected = false;
+          
+            function setConnectedUI(connected) {
+              window.GoogleCalendarConnected = connected;
+              if (!btn || !statusEl) return;
+              if (connected) {
+                btn.textContent = "Connected ✓";
+                btn.disabled = true;
+                statusEl.textContent = "Connected";
+              } else {
+                btn.textContent = "🔗 Connect Google Calendar";
+                btn.disabled = false;
+                statusEl.textContent = "Not connected";
+              }
+            }
+          
+            async function startGoogleOAuth() {
+              if (!btn) return;
+              btn.disabled = true;
+              btn.textContent = "Connecting…";
+          
+              // IMPORTANT: no "noopener" so callback can use window.opener.postMessage(...)
+              const popup = window.open("", "google_oauth_popup", "width=520,height=640");
+              if (!popup) {
+                alert("Popup blocked—please allow popups for this site and try again.");
+                setConnectedUI(false);
+                return;
+              }
+          
+              // Show something in the popup right away so it's not blank
+              try {
+                popup.document.write(`
+                  <!doctype html>
+                  <title>Connecting…</title>
+                  <style>
+                    html,body{height:100%;margin:0;font:14px/1.4 system-ui,sans-serif;background:#111;color:#eee}
+                    .wrap{display:flex;align-items:center;justify-content:center;height:100%}
+                    .box{padding:24px;border:1px solid #333;border-radius:12px;background:#181818}
+                  </style>
+                  <div class="wrap"><div class="box">Connecting to Google…</div></div>
+                `);
+                popup.document.close();
+              } catch (_) {}
+          
+              // Fetch the auth URL from your backend
+              let auth_url;
+              try {
+                const resp = await fetch("/auth/google/start", { credentials: "include" });
+                if (!resp.ok) {
+                  const msg = resp.status === 401
+                    ? "You must be signed in to this app before connecting Google."
+                    : "Failed to start Google sign-in.";
+                  throw new Error(msg);
+                }
+                const data = await resp.json();
+                auth_url = data && data.auth_url;
+                if (!auth_url) throw new Error("Server did not return an auth_url.");
+              } catch (err) {
+                try { popup.document.body.innerHTML = `<div class="wrap"><div class="box" style="color:#f88">${err.message}</div></div>`; } catch(_){}
+                alert(err.message || "Could not start Google sign-in.");
+                setConnectedUI(false);
+                return;
+              }
+          
+              // Navigate the popup to Google's consent screen
+              try {
+                popup.location.href = auth_url;
+              } catch (_) {
+                // Last resort: navigate the main window
+                window.location.href = auth_url;
+                return;
+              }
+          
+              // Wait for the callback page to postMessage back
+              const allowedOrigin = window.location.origin;
+          
+              function onMessage(event) {
+                if (event.origin !== allowedOrigin) return;
+                const data = event.data || {};
+                if (data.type === "google-auth-complete") {
+                  window.removeEventListener("message", onMessage);
+                  try { popup.close(); } catch(_){}
+                  setConnectedUI(true);
+                } else if (data.type === "google-auth-failed") {
+                  window.removeEventListener("message", onMessage);
+                  try { popup.close(); } catch(_){}
+                  alert("Google sign-in failed. Please try again.");
+                  setConnectedUI(false);
+                }
+              }
+              window.addEventListener("message", onMessage);
+          
+              // Safety net if user closes the popup early
+              const poll = setInterval(() => {
+                if (popup.closed) {
+                  clearInterval(poll);
+                  window.removeEventListener("message", onMessage);
+                  if (!window.GoogleCalendarConnected) setConnectedUI(false);
+                }
+              }, 500);
+            }
+          
+            if (btn) btn.addEventListener("click", startGoogleOAuth);
+          
+            // Optional: if you added /api/agent/calendar/peek, reflect real state on load
+            (async () => {
+              try {
+                const r = await fetch("/api/agent/calendar/peek?timeframe=this_week", { credentials: "include" });
+                setConnectedUI(r.ok);
+              } catch (_) {}
+            })();
+          })();
+          </script>
+          
 
         <!-- Documents -->
         <div class="sidebar-section">

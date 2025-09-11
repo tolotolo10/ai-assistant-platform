@@ -23,19 +23,18 @@ from app.api.endpoints import files as files_router
 from app.api.endpoints import agent as agent_router
 from app.api.endpoints import agent_actions as agent_actions_router  # type: ignore
 
-# NEW: OAuth + agent action routers
-# Support either location: app/api/... OR app/api/endpoints/...
-
+# OAuth routes
 from app.api.endpoints import google_oauth as google_oauth_router  # type: ignore
 
-
-
-
-# NEW: token check for auth-status helper
+# Utilities for auth-status helper
 from app.services.token_store import TokenStore
-from app.services.session import get_current_user_id  # implement/adjust per your auth
+from app.services.session import get_current_user_id
+
+# NEW: expose tool list (debug) from the same module the agent uses
+from app.tools.real_tools import get_all_tools
 
 # -----------------------------------------------------------------------------
+
 
 # Configure logging
 logging.basicConfig(
@@ -84,15 +83,14 @@ else:
     logging.getLogger(__name__).warning("Static 'web' folder NOT found at %s", WEB_DIR)
 
 # --- Routers ---
+# These three end up under /api/v1/...
 app.include_router(rag_router.router, prefix=settings.api_v1_prefix)
 app.include_router(files_router.router, prefix=settings.api_v1_prefix)
-app.include_router(agent_router.router, prefix=settings.api_v1_prefix)
+app.include_router(agent_router.router, prefix=settings.api_v1_prefix)  # -> /api/v1/agent/*
 
-# NEW: expose /auth/google/* endpoints (module must define `router = APIRouter(...)`)
-app.include_router(google_oauth_router.router)
-
-# NEW: expose /api/agent/schedule-meeting endpoint
-app.include_router(agent_actions_router.router)
+# OAuth + agent actions keep their own prefixes defined in the modules
+app.include_router(google_oauth_router.router)     # -> /auth/google/*
+app.include_router(agent_actions_router.router)    # -> /api/agent/*
 
 # --- Trusted hosts ---
 _clean_hosts = [h for h in settings.allowed_hosts if h and h != "*"]
@@ -146,12 +144,30 @@ async def api_v1_root():
         },
     }
 
-# NEW: used by the frontend to check if the user has connected Google yet
+# Used by the frontend to check if the user has connected Google yet
 @app.get("/api/me/google-auth-status")
 def google_auth_status(request: Request):
     user_id = get_current_user_id(request)  # must return a stable per-user id
     authed = bool(user_id and TokenStore.get(user_id))
     return {"authed": authed}
+
+# -----------------------------------------------------------------------------
+# NEW: Dev/debug helpers so you can verify tools and clear stale sessions
+
+# GET /api/v1/agent/debug/tools
+@app.get(f"{settings.api_v1_prefix}/agent/debug/tools")
+def debug_tools():
+    return {"tools": [t.name for t in get_all_tools()]}
+
+# POST /api/v1/agent/sessions/reset
+@app.post(f"{settings.api_v1_prefix}/agent/sessions/reset")
+def reset_agent_sessions():
+    # Reuse the singleton created in app.api.endpoints.agent
+    try:
+        agent_router.agent_service.drop_all_sessions()  # type: ignore[attr-defined]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to reset sessions: {e}")
+    return {"ok": True}
 
 # -----------------------------------------------------------------------------
 # Error handlers
