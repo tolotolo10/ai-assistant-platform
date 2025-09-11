@@ -22,25 +22,32 @@ def google_auth_start(request: Request):
 
 @router.get("/callback")
 def google_auth_callback(code: str, state: str, request: Request):
-    # validate state; extract user_id
     if not state.startswith("user:"):
         raise HTTPException(status_code=400, detail="Bad state")
     user_id = state.split(":", 1)[1]
 
     try:
         creds = exchange_code_for_tokens(code)
+
+        # fetch the user's Google profile (to show connected email in UI)
+        try:
+            oauth2 = build("oauth2", "v2", credentials=creds)
+            info = oauth2.userinfo().get().execute() or {}
+            email = info.get("email")
+        except Exception:
+            email = None
+
         TokenStore.save(user_id, {
             "token": creds.token,
-            "refresh_token": creds.refresh_token,
+            "refresh_token": creds.refresh_token,   # may be None on subsequent connects
             "scopes": list(creds.scopes or []),
-            "expiry": None,
+            "expiry": int(getattr(creds, "expiry", 0).timestamp()) if getattr(creds, "expiry", None) else None,
+            "email": email,
         })
 
-        # Success: notify opener and close
         html = """
         <script>
-          try { window.opener && window.opener.postMessage({type:"google-auth-complete"},"*"); }
-          catch(e) {}
+          try { window.opener && window.opener.postMessage({type:"google-auth-complete"},"*"); } catch(e) {}
           window.close();
         </script>
         <p>Google sign-in complete. You can close this window.</p>
@@ -48,16 +55,13 @@ def google_auth_callback(code: str, state: str, request: Request):
         return HTMLResponse(html)
 
     except Exception as e:
-        # Failure: send a message the opener can catch (optional), and show the error
         html = f"""
         <script>
-          try {{ window.opener && window.opener.postMessage({{type:"google-auth-failed", error: "{str(e).replace('"','\\"')}"}},"*"); }}
-          catch(err) {{}}
+          try {{ window.opener && window.opener.postMessage({{type:"google-auth-failed", error: "{str(e).replace('"','\\"')}"}},"*"); }} catch(err) {{}}
         </script>
-        <pre>OAuth callback failed:\n{str(e)}</pre>
+        <pre>OAuth callback failed:\\n{str(e)}</pre>
         """
         return HTMLResponse(html, status_code=500)
-
 
 @router.post("/disconnect")
 def google_disconnect(request: Request):

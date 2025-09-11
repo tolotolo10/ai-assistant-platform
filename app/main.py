@@ -147,30 +147,11 @@ async def api_v1_root():
 # Used by the frontend to check if the user has connected Google yet
 @app.get("/api/me/google-auth-status")
 def google_auth_status(request: Request):
-    user_id = get_current_user_id(request)  # must return a stable per-user id
-    authed = bool(user_id and TokenStore.get(user_id))
-    return {"authed": authed}
+    user_id = get_current_user_id(request)
+    tok = TokenStore.get(user_id) if user_id else None
+    return {"authed": bool(tok), "email": (tok or {}).get("email")}
 
-# -----------------------------------------------------------------------------
-# NEW: Dev/debug helpers so you can verify tools and clear stale sessions
 
-# GET /api/v1/agent/debug/tools
-@app.get(f"{settings.api_v1_prefix}/agent/debug/tools")
-def debug_tools():
-    return {"tools": [t.name for t in get_all_tools()]}
-
-# POST /api/v1/agent/sessions/reset
-@app.post(f"{settings.api_v1_prefix}/agent/sessions/reset")
-def reset_agent_sessions():
-    # Reuse the singleton created in app.api.endpoints.agent
-    try:
-        agent_router.agent_service.drop_all_sessions()  # type: ignore[attr-defined]
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to reset sessions: {e}")
-    return {"ok": True}
-
-# -----------------------------------------------------------------------------
-# Error handlers
 
 @app.exception_handler(404)
 async def not_found_handler(request, exc):
