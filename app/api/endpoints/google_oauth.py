@@ -1,9 +1,6 @@
-# app/api/google_oauth.py
-from __future__ import annotations
-
-from fastapi import APIRouter, Request, HTTPException
+from fastapi import APIRouter, Request, Response, HTTPException
 from fastapi.responses import JSONResponse, HTMLResponse
-
+from googleapiclient.discovery import build
 from app.services.google_auth import start_oauth, exchange_code_for_tokens
 from app.services.token_store import TokenStore
 from app.services.session import get_current_user_id
@@ -16,53 +13,44 @@ def google_auth_start(request: Request):
     user_id = get_current_user_id(request)
     if not user_id:
         raise HTTPException(status_code=401, detail="Not signed in")
+
     state = f"user:{user_id}"
-    url = start_oauth(state)
+    redirect_uri = str(request.url_for("google_auth_callback"))
+    url = start_oauth(state, redirect_uri)
     return JSONResponse({"auth_url": url})
 
-@router.get("/callback")
+@router.get("/callback", name="google_auth_callback")
 def google_auth_callback(code: str, state: str, request: Request):
     if not state.startswith("user:"):
         raise HTTPException(status_code=400, detail="Bad state")
     user_id = state.split(":", 1)[1]
 
+    redirect_uri = str(request.url_for("google_auth_callback"))
+    creds = exchange_code_for_tokens(code, redirect_uri)
+
     try:
-        creds = exchange_code_for_tokens(code)
+        oauth2 = build("oauth2", "v2", credentials=creds)
+        info = oauth2.userinfo().get().execute() or {}
+        email = info.get("email")
+    except Exception:
+        email = None
 
-        # fetch the user's Google profile (to show connected email in UI)
-        try:
-            oauth2 = build("oauth2", "v2", credentials=creds)
-            info = oauth2.userinfo().get().execute() or {}
-            email = info.get("email")
-        except Exception:
-            email = None
+    TokenStore.save(user_id, {
+        "token": creds.token,
+        "refresh_token": creds.refresh_token,
+        "scopes": list(creds.scopes or []),
+        "expiry": int(getattr(creds, "expiry", 0).timestamp()) if getattr(creds, "expiry", None) else None,
+        "email": email,
+    })
 
-        TokenStore.save(user_id, {
-            "token": creds.token,
-            "refresh_token": creds.refresh_token,   # may be None on subsequent connects
-            "scopes": list(creds.scopes or []),
-            "expiry": int(getattr(creds, "expiry", 0).timestamp()) if getattr(creds, "expiry", None) else None,
-            "email": email,
-        })
+    return HTMLResponse("""
+      <script>
+        try { window.opener && window.opener.postMessage({type:"google-auth-complete"},"*"); } catch(e) {}
+        window.close();
+      </script>
+      <p>Done. You can close this window.</p>
+    """)
 
-        html = """
-        <script>
-          try { window.opener && window.opener.postMessage({type:"google-auth-complete"},"*"); } catch(e) {}
-          window.close();
-        </script>
-        <p>Google sign-in complete. You can close this window.</p>
-        """
-        return HTMLResponse(html)
-
-    except Exception as e:
-        error_str = str(e).replace('"', '\\"')
-        html = f"""
-        <script>
-        try {{ window.opener && window.opener.postMessage({{type:"google-auth-failed", error: "{error_str}"}},"*"); }} catch(err) {{}}
-        </script>
-        <pre>OAuth callback failed:\n{str(e)}</pre>
-        """
-        return HTMLResponse(html, status_code=500)
 
 @router.post("/disconnect")
 def google_disconnect(request: Request):
@@ -72,7 +60,6 @@ def google_disconnect(request: Request):
 
     # Best-effort revoke
     try:
-        import requests
         tok = TokenStore.get(user_id) or {}
         t = tok.get("token") or tok.get("refresh_token")
         if t:

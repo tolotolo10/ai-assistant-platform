@@ -4,11 +4,12 @@ FastAPI application entry point for AI Assistant Platform.
 Configures routes, middleware, and application lifecycle.
 """
 import logging
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.middleware.trustedhost import TrustedHostMiddleware
@@ -16,7 +17,7 @@ from starlette.staticfiles import StaticFiles
 
 from app.config import settings
 
-# -----------------------------------------------------------------------------
+# ----------------------------------------------------------------------------- 
 # Existing routers
 from app.api.endpoints import rag as rag_router
 from app.api.endpoints import files as files_router
@@ -28,7 +29,7 @@ from app.api.endpoints import google_oauth as google_oauth_router  # type: ignor
 
 # Utilities for auth-status helper
 from app.services.token_store import TokenStore
-from app.services.session import get_current_user_id
+from app.services import session
 
 # NEW: expose tool list (debug) from the same module the agent uses
 from app.tools.real_tools import get_all_tools
@@ -46,14 +47,11 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info(f"Starting {settings.app_name} v{settings.app_version}")
-    # Initialize DB here (not at import time)
     try:
-        # If you have an init_db() function, import/use it here.
-        init_db()  # noqa: F821  # allowed to fail if not defined
+        init_db()  # noqa: F821  # optional DB init
         logger.info("Database initialized")
     except Exception as e:
         logger.error(f"DB init failed: {e}")
-        # continue even if DB init fails
     try:
         yield
     finally:
@@ -72,7 +70,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# --- STATIC SITE MOUNT (absolute path, single mount) ---
+# --- STATIC SITE MOUNT ---
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 WEB_DIR = PROJECT_ROOT / "web"
 
@@ -83,12 +81,9 @@ else:
     logging.getLogger(__name__).warning("Static 'web' folder NOT found at %s", WEB_DIR)
 
 # --- Routers ---
-# These three end up under /api/v1/...
 app.include_router(rag_router.router, prefix=settings.api_v1_prefix)
 app.include_router(files_router.router, prefix=settings.api_v1_prefix)
-app.include_router(agent_router.router, prefix=settings.api_v1_prefix)  # -> /api/v1/agent/*
-
-# OAuth + agent actions keep their own prefixes defined in the modules
+app.include_router(agent_router.router, prefix=settings.api_v1_prefix)
 app.include_router(google_oauth_router.router)     # -> /auth/google/*
 app.include_router(agent_actions_router.router)    # -> /api/agent/*
 
@@ -99,7 +94,7 @@ if _clean_hosts:
         _clean_hosts.append("testserver")
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=_clean_hosts)
 
-# Add CORS middleware for frontend integration
+# --- CORS ---
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # Restrict in production
@@ -108,12 +103,31 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# -----------------------------------------------------------------------------
+# ----------------------------------------------------------------------------- 
+# Middleware: ensure every visitor has a uid cookie
+
+COOKIE_NAME = "uid"
+
+@app.middleware("http")
+async def assign_uid_cookie(request: Request, call_next):
+    response: Response = await call_next(request)
+    uid = request.cookies.get(COOKIE_NAME)
+    if not uid:
+        uid = str(uuid.uuid4())
+        response.set_cookie(
+            COOKIE_NAME,
+            uid,
+            httponly=True,
+            samesite="lax",
+            secure=not settings.debug,  # secure cookies in prod
+        )
+    return response
+
+# ----------------------------------------------------------------------------- 
 # Health + utility endpoints
 
 @app.get("/")
 async def root():
-    """Root endpoint - basic health check."""
     return {
         "message": f"Welcome to {settings.app_name}",
         "version": settings.app_version,
@@ -123,7 +137,6 @@ async def root():
 
 @app.get("/health")
 async def health_check():
-    """Detailed health check endpoint."""
     return {
         "status": "healthy",
         "app_name": settings.app_name,
@@ -134,7 +147,6 @@ async def health_check():
 
 @app.get(settings.api_v1_prefix)
 async def api_v1_root():
-    """API v1 root endpoint."""
     return {
         "message": "AI Assistant Platform API v1",
         "endpoints": {
@@ -147,10 +159,9 @@ async def api_v1_root():
 # Used by the frontend to check if the user has connected Google yet
 @app.get("/api/me/google-auth-status")
 def google_auth_status(request: Request):
-    user_id = get_current_user_id(request)
+    user_id = session.get_current_user_id(request)
     tok = TokenStore.get(user_id) if user_id else None
     return {"authed": bool(tok), "email": (tok or {}).get("email")}
-
 
 
 @app.exception_handler(404)
@@ -169,7 +180,7 @@ async def internal_error_handler(request, exc):
         content={"error": "Internal server error", "status_code": 500},
     )
 
-# -----------------------------------------------------------------------------
+# ----------------------------------------------------------------------------- 
 # Development server runner
 
 if __name__ == "__main__":

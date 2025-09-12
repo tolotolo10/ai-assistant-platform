@@ -738,9 +738,15 @@
             <button id="connect-google-btn" class="action-btn" type="button">
               🔗 Connect Google Calendar
             </button>
+            
+            <button id="disconnect-google-btn" class="action-btn" type="button">
+              🔌 Disconnect Google
+            </button>
+            
             <div id="google-conn-status" aria-live="polite" style="font-size:12px; opacity:.8;">
               Not connected
             </div>
+            
           </div>
         </div>
 
@@ -748,39 +754,54 @@
 
         <script>
           (() => {
-            const btn = document.getElementById("connect-google-btn");
-            const statusEl = document.getElementById("google-conn-status");
+            const connectBtn    = document.getElementById("connect-google-btn");
+            const disconnectBtn = document.getElementById("disconnect-google-btn");
+            const statusEl      = document.getElementById("google-conn-status");
           
-            window.GoogleCalendarConnected = false;
+            function setConnectedUI({ connected, email = null, connecting = false }) {
+              window.GoogleCalendarConnected = !!connected;
           
-            function setConnectedUI(connected) {
-              window.GoogleCalendarConnected = connected;
-              if (!btn || !statusEl) return;
-              if (connected) {
-                btn.textContent = "Connected ✓";
-                btn.disabled = true;
-                statusEl.textContent = "Connected";
-              } else {
-                btn.textContent = "🔗 Connect Google Calendar";
-                btn.disabled = false;
-                statusEl.textContent = "Not connected";
-              }
-            }
-          
-            async function startGoogleOAuth() {
-              if (!btn) return;
-              btn.disabled = true;
-              btn.textContent = "Connecting…";
-          
-              // IMPORTANT: no "noopener" so callback can use window.opener.postMessage(...)
-              const popup = window.open("", "google_oauth_popup", "width=520,height=640");
-              if (!popup) {
-                alert("Popup blocked—please allow popups for this site and try again.");
-                setConnectedUI(false);
+              if (connecting) {
+                if (connectBtn) { connectBtn.disabled = true; connectBtn.textContent = "Connecting…"; }
+                if (disconnectBtn) { disconnectBtn.disabled = true; disconnectBtn.textContent = "🔌 Disconnect Google"; }
+                if (statusEl) statusEl.textContent = "Connecting…";
                 return;
               }
           
-              // Show something in the popup right away so it's not blank
+              if (connected) {
+                if (connectBtn)  { connectBtn.style.display = "none"; }
+                if (disconnectBtn) { disconnectBtn.disabled = false; disconnectBtn.textContent = "🔌 Disconnect Google"; }
+                if (statusEl) statusEl.textContent = email ? `Connected as ${email}` : "Connected";
+              } else {
+                if (connectBtn)  { connectBtn.style.display = "block"; connectBtn.disabled = false; connectBtn.textContent = "🔗 Connect Google Calendar"; }
+                if (disconnectBtn){ disconnectBtn.disabled = true; disconnectBtn.textContent = "🔌 Disconnect (not connected)"; }
+                if (statusEl) statusEl.textContent = "Not connected";
+              }
+            }
+          
+            async function refreshStatus() {
+              try {
+                const r = await fetch("/api/me/google-auth-status", { credentials: "include" });
+                if (r.ok) {
+                  const js = await r.json();
+                  setConnectedUI({ connected: !!js.authed, email: js.email || null });
+                  return !!js.authed;
+                }
+              } catch {}
+              setConnectedUI({ connected: false });
+              return false;
+            }
+          
+            async function startGoogleOAuth() {
+              setConnectedUI({ connecting: true });
+          
+              const popup = window.open("", "google_oauth_popup", "width=520,height=640");
+              if (!popup) {
+                alert("Popup blocked—please allow popups for this site and try again.");
+                setConnectedUI({ connected: false });
+                return;
+              }
+          
               try {
                 popup.document.write(`
                   <!doctype html>
@@ -793,9 +814,8 @@
                   <div class="wrap"><div class="box">Connecting to Google…</div></div>
                 `);
                 popup.document.close();
-              } catch (_) {}
+              } catch(_) {}
           
-              // Fetch the auth URL from your backend
               let auth_url;
               try {
                 const resp = await fetch("/auth/google/start", { credentials: "include" });
@@ -811,59 +831,55 @@
               } catch (err) {
                 try { popup.document.body.innerHTML = `<div class="wrap"><div class="box" style="color:#f88">${err.message}</div></div>`; } catch(_){}
                 alert(err.message || "Could not start Google sign-in.");
-                setConnectedUI(false);
+                setConnectedUI({ connected: false });
                 return;
               }
           
-              // Navigate the popup to Google's consent screen
-              try {
-                popup.location.href = auth_url;
-              } catch (_) {
-                // Last resort: navigate the main window
-                window.location.href = auth_url;
-                return;
-              }
+              try { popup.location.href = auth_url; }
+              catch (_) { window.location.href = auth_url; return; }
           
-              // Wait for the callback page to postMessage back
               const allowedOrigin = window.location.origin;
-          
-              function onMessage(event) {
+              async function onMessage(event) {
                 if (event.origin !== allowedOrigin) return;
                 const data = event.data || {};
+                window.removeEventListener("message", onMessage);
+                try { popup.close(); } catch(_) {}
                 if (data.type === "google-auth-complete") {
-                  window.removeEventListener("message", onMessage);
-                  try { popup.close(); } catch(_){}
-                  setConnectedUI(true);
-                } else if (data.type === "google-auth-failed") {
-                  window.removeEventListener("message", onMessage);
-                  try { popup.close(); } catch(_){}
+                  await refreshStatus();
+                } else {
                   alert("Google sign-in failed. Please try again.");
-                  setConnectedUI(false);
+                  setConnectedUI({ connected: false });
                 }
               }
               window.addEventListener("message", onMessage);
           
-              // Safety net if user closes the popup early
               const poll = setInterval(() => {
                 if (popup.closed) {
                   clearInterval(poll);
                   window.removeEventListener("message", onMessage);
-                  if (!window.GoogleCalendarConnected) setConnectedUI(false);
+                  if (!window.GoogleCalendarConnected) setConnectedUI({ connected: false });
                 }
               }, 500);
             }
           
-            if (btn) btn.addEventListener("click", startGoogleOAuth);
-          
-            // Optional: if you added /api/agent/calendar/peek, reflect real state on load
-            (async () => {
+            async function disconnectGoogle() {
+              disconnectBtn.disabled = true;
+              disconnectBtn.textContent = "Disconnecting…";
               try {
-                const r = await fetch("/api/agent/calendar/peek?timeframe=this_week", { credentials: "include" });
-                setConnectedUI(r.ok);
-              } catch (_) {}
-            })();
+                await fetch("/auth/google/disconnect", { method: "POST", credentials: "include" });
+              } catch(_) {}
+              await refreshStatus();
+            }
+          
+            if (connectBtn)    connectBtn.addEventListener("click", startGoogleOAuth);
+            if (disconnectBtn) disconnectBtn.addEventListener("click", disconnectGoogle);
+          
+            // initialize UI state
+            refreshStatus();
           })();
           </script>
+          
+          
           
 
         <!-- Documents -->
