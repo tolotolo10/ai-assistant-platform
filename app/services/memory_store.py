@@ -19,3 +19,12 @@ class MemoryStore:
             )
         return self._store[session_id]
 
+    def drop(self, session_id: str) -> None:
+        """Remove a session's memory from the store"""
+        self._store.pop(session_id, None)
+
+    def clear(self, session_id: str) -> None:
+        """Clear a session's memory but keep it in the store"""
+        if session_id in self._store:
+            self._store[session_id].clear()
+

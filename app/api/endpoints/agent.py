@@ -48,6 +48,12 @@ def reset_sessions():
     agent_service.drop_all_sessions()
     return {"ok": True}
 
+@router.post("/sessions/{session_id}/clear")
+def clear_session(session_id: str):
+    """Clear memory for a specific session"""
+    agent_service.clear_session(session_id)
+    return {"ok": True}
+
 @router.get("/debug/tools")
 def debug_tools():
     return {"tools": [t.name for t in get_all_tools()]}

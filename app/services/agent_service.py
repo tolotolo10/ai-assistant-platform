@@ -43,7 +43,10 @@ class AgentService:
                     "system",
                     "You're a helpful assistant. Use tools when they improve accuracy or speed. "
                     "After a tool runs, its result will appear in the scratchpad. "
-                    "Use the 'rag_query' tool for questions about uploaded documents. "
+                    "IMPORTANT: When the user asks questions that could relate to documents (like 'summarize', 'analyze', 'what does it say', etc.), "
+                    "ALWAYS use the 'rag_query' tool first to search for relevant information from uploaded documents. "
+                    "If the user has recently uploaded documents in this conversation, assume their questions are about those documents. "
+                    "Use the 'rag_query' tool for ANY questions about content, summaries, analysis, or information that could be in uploaded documents. "
                     "For calendar questions like 'Do I have a meeting today/this week/this month?', "
                     "use 'list_calendar_events' with an appropriate timeframe. "
                     "For scheduling, use 'create_calendar_event'. "
@@ -125,6 +128,10 @@ class AgentService:
     def drop_session(self, session_id: str) -> None:
         self.mem_store.drop(session_id)
         self._sessions.pop(session_id, None)
+
+    def clear_session(self, session_id: str) -> None:
+        """Clear the memory for a specific session"""
+        self.mem_store.clear(session_id)
 
     def drop_all_sessions(self) -> None:
         for sid in list(self._sessions.keys()):

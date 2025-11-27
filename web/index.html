@@ -1324,12 +1324,12 @@
       <div class="sidebar-footer">
         <div class="user-profile">
           <div class="user-avatar" style="position: relative;">
-            JD
+            MA
             <div class="status-indicator"></div>
           </div>
           <div class="user-info">
-            <div class="user-name">John Doe</div>
-            <div class="user-email">john@company.com</div>
+            <div class="user-name">Mohd Aamir</div>
+            <div class="user-email">mohd.aamir@enterprise.fr</div>
           </div>
           <button class="user-menu-btn">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -1515,7 +1515,8 @@
       schedule: "/api/agent/schedule-meeting",
       authStatus: "/api/me/google-auth-status",
       authStart: "/auth/google/start",
-      authDisconnect: "/auth/google/disconnect"
+      authDisconnect: "/auth/google/disconnect",
+      clearSession: "/api/v1/agent/sessions"
     };
 
     // DOM Elements
@@ -1548,6 +1549,7 @@
     let sessions = loadSessions();
     let activeSessionId = ensureActiveSession();
     let selectedDocument = null;
+    let uploadedDocuments = []; // Track uploaded documents in this session
 
     // Session Management
     function loadSessions() {
@@ -1587,10 +1589,20 @@
       setActiveSession(id);
     }
 
-    function setActiveSession(id) {
+    async function setActiveSession(id) {
       activeSessionId = id;
       renderSessions();
       clearMessages();
+      uploadedDocuments = []; // Clear uploaded documents list
+      documentList.innerHTML = '';
+      documentList.classList.add('hidden');
+      selectedDocument = null;
+      // Clear backend memory for this session
+      try {
+        await fetch(`${API.clearSession}/${id}/clear`, { method: 'POST' });
+      } catch (e) {
+        console.warn('Failed to clear session memory:', e);
+      }
     }
 
     function renameSession(id) {
@@ -1917,6 +1929,9 @@
         const data = await res.json();
         const saved = (data?.saved || []).map(p => p.split(/[\\/]/).pop());
 
+        // Add to uploaded documents list
+        uploadedDocuments.push(...saved);
+
         documentList.innerHTML = '';
         saved.forEach(name => {
           const item = document.createElement('div');
@@ -1941,7 +1956,12 @@
         });
 
         documentList.classList.remove('hidden');
-        addMessage('ai', `<div><strong>Uploaded:</strong> ${saved.join(', ')}</div>`, true);
+
+        // Send context message to AI about uploaded documents
+        const uploadMsg = `I have uploaded the following document(s): ${saved.join(', ')}. Please acknowledge that you can now answer questions about ${saved.length > 1 ? 'these documents' : 'this document'}.`;
+        addMessage('user', uploadMsg);
+        streamMessage(uploadMsg);
+
         setStatus('Upload complete', 'success');
         fileInput.value = '';
       } catch (e) {
@@ -2134,6 +2154,11 @@
     initTheme();
     renderSessions();
     checkAuthStatus();
+    // Clear backend memory for the active session on page load
+    if (activeSessionId) {
+      fetch(`${API.clearSession}/${activeSessionId}/clear`, { method: 'POST' })
+        .catch(e => console.warn('Failed to clear session memory on load:', e));
+    }
   </script>
 </body>
 </html>
