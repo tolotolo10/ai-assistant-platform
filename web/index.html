@@ -1959,7 +1959,6 @@
 
         // Send context message to AI about uploaded documents
         const uploadMsg = `I have uploaded the following document(s): ${saved.join(', ')}. Please acknowledge that you can now answer questions about ${saved.length > 1 ? 'these documents' : 'this document'}.`;
-        addMessage('user', uploadMsg);
         streamMessage(uploadMsg);
 
         setStatus('Upload complete', 'success');

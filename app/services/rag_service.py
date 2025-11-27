@@ -70,7 +70,8 @@ class QueryEnhancer:
         # Summary queries
         if any(phrase in query_lower for phrase in [
             'what is this about', 'summarize', 'summary', 'overview',
-            'what does', 'main topic', 'describe the document'
+            'what does', 'main topic', 'describe the document', 'analyze',
+            'analysis', 'explain the document', 'tell me about', 'what is the document about'
         ]):
             return QueryType.SUMMARY
         
@@ -239,16 +240,16 @@ class RAGService:
             docs.extend(load_files(file_paths))
         if urls:
             docs.extend(load_web(urls))
-        
+
         if not docs:
             logger.warning("No documents to ingest")
             return 0
-        
-        # Create chunks with metadata preservation
+
+        # Create chunks with larger size for better context
         chunks = make_chunks(
             docs,
-            chunk_size=512,
-            chunk_overlap=128,
+            chunk_size=1000,  # Increased from 512 for better context
+            chunk_overlap=200,  # Increased overlap for continuity
             use_semantic=False,  # Set to True if you have semantic chunker
             preserve_metadata_chunks=True
         )
@@ -357,14 +358,21 @@ class RAGService:
     
     def answer(self, question: str, top_k: int = 4) -> dict:
         """Generate answer with enhanced retrieval and prompting."""
-        k = max(4, min(top_k, 12))
-        
+        # Classify query type first
+        query_type = self.query_enhancer.classify_query(question)
+
+        # Adjust k based on query type
+        if query_type == QueryType.SUMMARY:
+            k = max(8, min(top_k * 2, 16))  # Get more chunks for summaries
+        else:
+            k = max(4, min(top_k, 12))
+
         # Retrieve with enhancement
         docs = self._retrieve_with_enhancement(question, k)
-        
+
         # Filter empty docs
         docs = [d for d in docs if d.page_content.strip()]
-        
+
         if not docs:
             return {"answer": "I don't have information to answer this question.", "sources": []}
         
@@ -384,14 +392,11 @@ class RAGService:
             elif doc_type == 'results_metadata':
                 return f"[RESULTS SECTION]\n{doc.page_content}\n"
             else:
-                return f"[Source: {source}]\n{doc.page_content[:1500]}\n"
+                return f"[Source: {source}]\n{doc.page_content[:2000]}\n"
         
         context = "\n---\n".join(format_doc(d) for d in docs[:k])
-        
-        # Detect query type for specialized prompting
-        query_type = self.query_enhancer.classify_query(question)
-        
-        # Create appropriate prompt
+
+        # Create appropriate prompt based on query type
         if query_type == QueryType.METADATA:
             prompt_template = """You are a helpful assistant. Answer the question using ONLY the provided context.
 
@@ -407,7 +412,25 @@ Context:
 {context}
 
 Answer:"""
-        
+
+        elif query_type == QueryType.SUMMARY:
+            prompt_template = """You are a helpful assistant tasked with summarizing or analyzing a document.
+
+Instructions:
+- Read through ALL the provided context carefully, especially sections marked [TITLE AND ABSTRACT] and [CONCLUSION SECTION]
+- For summaries: Provide a comprehensive overview covering the main topic, key findings, methodology (if applicable), and conclusions
+- For analysis: Provide detailed insights based on the content, identifying key themes, contributions, and implications
+- Use clear, structured formatting with bullet points or paragraphs as appropriate
+- Include specific details and examples from the document
+- If asking about what the document is about, explain the purpose, scope, and main contributions
+
+Question: {question}
+
+Context:
+{context}
+
+Comprehensive Answer:"""
+
         elif query_type == QueryType.SPECIFIC:
             prompt_template = """You are a helpful assistant. Answer using ONLY the provided context.
 
@@ -415,6 +438,7 @@ Special Instructions:
 - Look for sections marked with [CONCLUSION SECTION] or [RESULTS SECTION] if relevant
 - Provide specific details from the document
 - Quote relevant passages when appropriate
+- Be thorough and include all relevant information
 
 Question: {question}
 
@@ -422,10 +446,15 @@ Context:
 {context}
 
 Answer:"""
-        
+
         else:
             prompt_template = """You are a helpful assistant. Answer using ONLY the provided context.
-Do not use outside knowledge. If you cannot answer from the context, say so.
+
+Instructions:
+- Read the context carefully and extract relevant information
+- Provide a clear, well-structured answer
+- Include specific details when available
+- If you cannot answer from the context, say so clearly
 
 Question: {question}
 

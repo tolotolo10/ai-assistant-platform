@@ -110,14 +110,9 @@ class AgentService:
                     if chunk and getattr(chunk, "content", None):
                         buf = _smart_join(buf, chunk.content)
                         now = time.monotonic()
-                        if len(buf) >= 64 or (now - last_flush) >= 0.07:
+                        if len(buf) >= 50 or (now - last_flush) >= 0.05:
                             yield sse_event("delta", buf); buf = ""; last_flush = now
-                elif kind == "on_tool_start":
-                    name = ev.get("name") or ev.get("data", {}).get("name")
-                    if name: yield sse_event("delta", f"\n[tool:{name}…] ")
-                elif kind == "on_tool_end":
-                    name = ev.get("name") or ev.get("data", {}).get("name")
-                    if name: yield sse_event("delta", f" [/tool:{name}]\n")
+                # Tool events are now silently ignored - no tool usage shown to user
         except Exception as e:
             if buf: yield sse_event("delta", buf)
             yield sse_event("error", str(e)); return
